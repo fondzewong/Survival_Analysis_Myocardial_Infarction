@@ -1,0 +1,1218 @@
+---
+title: "Survival Analysis of Mycardial Infarction"
+author: "Davat, Claire; Fondzewong Wiyfengla, Anslem; Wieber, Andrew"
+date: "August 25th, 2024"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+# 1) ACTIVATE THE LIBRARIES AND IMPORT THE DATA SET
+
+```{r}
+#Global markdown settings
+knitr::opts_chunk$set(include = TRUE, echo=TRUE, out.width="65%")
+
+# purge stored data
+rm(list=ls())
+# in package timereg
+library(survival)
+library(ggplot2)
+library(timereg)
+library(gridExtra)
+library(caret)
+library(dplyr) #need for the filter function
+library(data.table)
+library("survminer")
+library(car)
+data(TRACE)
+dim(TRACE) #Check the number of lines and rows
+head(TRACE) #Look at the first data
+```
+
+id:       a numeric vector. Patient code.
+status:   a numeric vector code. Survival status. 9: dead from myocardial infarction, 0: alive, 7,8: dead from other causes.
+time:     a numeric vector. Survival time in years.
+chf:      a numeric vector code. Clinical heart pump failure, 1: present, 0: absent.
+diabetes: a numeric vector code. Diabetes, 1: present, 0: absent.
+vf:       a numeric vector code. Ventricular fibrillation, 1: present, 0: absent.
+wmi:      a numeric vector. Measure of heart pumping effect based on ultrasound measurements where 2 is normal and 0 is worst.
+sex:      a numeric vector code. 1: female, 0: male.
+age:      a numeric vector code. Age of patient.
+
+
+# 2) EXPLORATORY DATA ANALYSIS
+## 2.1) Count the number of unique patients and missing data
+```{r}
+#Find the number of unique patients
+nbPatients <- length(unique(rownames(TRACE)))
+paste("Number of unique patients =", nbPatients)
+
+#Find the number of NA entries
+paste("Total nb of NA =", sum(is.na(TRACE)))
+```
+
+## 2.2) General statistical overview of the data
+```{r}
+summary(TRACE)
+```
+ID:
+The dataset contains 1,878 unique patients
+
+WMI (Wall Motion Index):
+Ranges from 0.3 to 3.0.
+The mean WMI is 1.398, indicating the average wall motion index is slightly below the mid-point of its range.
+Median WMI is 1.4, suggesting a relatively normal distribution around the mean.
+
+Status:
+Median status is 9 (dead from myocardial infarction), showing that more than half of the patients died from myocardial infarction.
+
+CHF (Congestive Heart Failure):
+The mean value is 0.5229, meaning approximately 52.29% of the patients had CHF.
+
+Age:
+The age range is from 22.94 to 96.33 years, with a mean age of 67 years.
+The median age is 68.23, indicating a slightly skewed distribution towards younger ages.
+
+Sex:
+This is a binary variable (1 for female, 0 for male).
+The mean sex value is 0.6954, suggesting that approximately 69.54% of the patients are female.
+
+Diabetes:
+This is a binary variable (0 or 1).
+The mean value is 0.1001, indicating that only about 10.01% of the patients have diabetes.
+
+Time:
+The time variable ranges from 0.000687 to 8.482000.
+The mean time is 4.552470, suggesting that the average duration until the event happens is about 4.55 years.
+The median time is 6.088000, indicating that more than half of the events occur after approximately 6.09 years.
+
+VF (Ventricular Fibrillation):
+The mean value is 0.07242, suggesting that about 7.24% of the patients experienced ventricular fibrillation.
+
+Censored Data: Given the range and distribution of the 'time' variable, it is likely that some observations are censored, meaning the event of interest has not occurred for all subjects within the observed time frame.
+
+Covariate Effects:
+Age, CHF, and sex might be significant predictors of survival, given their variability and distribution in the dataset.
+The presence of diabetes (though relatively infrequent) and ventricular fibrillation (VF) may also impact survival times and should be investigated.
+
+Event Distribution: The high median status value suggests that a large proportion of subjects might have experienced the event, making this dataset suitable for survival analysis.
+
+
+## 2.3) Frequencies of the different variable
+```{r}
+par(mfrow=c(2,2))
+hist(TRACE$time, main="Histogram of Time", xlab="Years")
+hist(TRACE$age, main="Histogram of Age", xlab="Years")
+hist(TRACE$wmi, main="Histogram of WMI", xlab="Value")
+```
+## 2.4) Cleaning of status variable
+```{r}
+# Combine status values 7 and 8 into one category
+TRACE$status2 <- ifelse(TRACE$status == 7 | TRACE$status == 8, "7&8", TRACE$status)
+TRACE$status2 <- factor(TRACE$status2, levels = c(0, "7&8", 9), labels = c("Alive", "Dead other causes", "Dead from MI"))
+```
+
+## 2.5) Analyse groups via pie charts
+```{r}
+# Function to create pie chart with percentages and smaller text size
+create_pie_chart <- function(data, labels, title) {
+  data <- as.data.frame(data)
+  data$labels <- labels
+  data$percent <- round(data$Freq / sum(data$Freq) * 100, 1)
+  data$labels <- paste(data$labels, data$percent, "%")
+  
+  ggplot(data, aes(x = "", y = Freq, fill = labels)) +
+    geom_bar(stat = "identity", width = 1) +
+    coord_polar("y") +
+    theme_void() +
+    labs(title = title) +
+    theme(legend.position = "none") +
+    geom_text(aes(label = labels), position = position_stack(vjust = 0.3), size = 2.5)
+}
+
+# Data and labels
+sex_counts <- table(TRACE$sex)
+sex_labels <- c("Male", "Female")
+
+status_counts <- table(TRACE$status2)
+status_labels <- c("Alive", "Dead others", "Dead from MI")
+
+diabetes_counts <- table(TRACE$diabetes)
+diabetes_labels <- c("Absent", "Present")
+
+vf_counts <- table(TRACE$vf)
+vf_labels <- c("Absent", "Present")
+
+chf_counts <- table(TRACE$chf)
+chf_labels <- c("Absent", "Present")
+
+# Create pie charts
+p1 <- create_pie_chart(sex_counts, sex_labels, "Sex")
+p2 <- create_pie_chart(status_counts, status_labels, "Status")
+p3 <- create_pie_chart(diabetes_counts, diabetes_labels, "Diabetes")
+p4 <- create_pie_chart(vf_counts, vf_labels, "Ventricular Fibrillation")
+p5 <- create_pie_chart(chf_counts, chf_labels, "Heart pump failure")
+
+# Arrange the plots in a 2x2 grid
+grid.arrange(p1, p2, p3, p4, p5, ncol = 3)
+```
+
+## 2.6) Boxplots of variables with respect to age
+```{r}
+par(mfrow=c(2,3))
+boxplot(TRACE$age~TRACE$status, names = c("Alive", "Dead others-7", "Dead others-8", "Dead from MI"))
+boxplot(TRACE$age~TRACE$chf, names = c("Absent", "Present"))
+boxplot(TRACE$age~TRACE$vf, names = c("Absent", "Present"))
+boxplot(TRACE$age~TRACE$sex, names = c("Male", "Female"))
+boxplot(TRACE$age~TRACE$diabetes, names = c("Absent", "Present"))
+```
+Age is an important factor:
+- The age distribution across different status categories shows that individuals who died from myocardial infarction are generally older.
+- Heart pump failure and ventricular fibrillation are more prevalent among older individuals.
+- There is no significant difference in the age distribution between males and females.
+- Diabetes is slightly more common in older individuals.
+
+## 2.7) Boxplots of variables with respect to time
+```{r}
+par(mfrow=c(2,3))
+boxplot(TRACE$time~TRACE$status, names = c("Alive", "Dead others-7", "Dead others-8", "Dead from MI"))
+boxplot(TRACE$time~TRACE$chf, names = c("Absent", "Present"))
+boxplot(TRACE$time~TRACE$vf, names = c("Absent", "Present"))
+boxplot(TRACE$time~TRACE$sex, names = c("Male", "Female"))
+boxplot(TRACE$time~TRACE$diabetes, names = c("Absent", "Present"))
+```
+Survival time is impacted by differents factors: status, CHF, VF and diabetes
+Status: Patients who are alive have the highest median survival time. Those who died from MI or other causes have significantly lower survival times.
+CHF and VF: The presence of CHF or VF significantly reduces median survival time compared to those without these conditions.
+Diabetes: The presence of diabetes slightly reduces median survival time, but the impact is less pronounced compared to conditions like CHF or VF.
+Sex: There is a slight difference in median survival time between males and females, with females having a marginally higher median survival time.
+
+## 2.8) Boxplots of variables with respect to wmi
+```{r}
+par(mfrow=c(2,3))
+boxplot(TRACE$wmi~TRACE$status, names = c("Alive", "Dead others-7", "Dead others-8", "Dead from MI"))
+boxplot(TRACE$wmi~TRACE$chf, names = c("Absent", "Present"))
+boxplot(TRACE$wmi~TRACE$vf, names = c("Absent", "Present"))
+boxplot(TRACE$wmi~TRACE$sex, names = c("Male", "Female"))
+boxplot(TRACE$wmi~TRACE$diabetes, names = c("Absent", "Present"))
+```
+worse heart pumping is associated with health conditions:
+- CHF, VF and diabetes: Those with congestive heart failure or ventricular fibrillation or diabetes show a slightly lower median wmi.
+- Status: The "Dead from MI" group shows a noticeably lower medianswmi compared to other status groups.
+Sex: There is no significant difference between males and females regarding wmi
+
+## 2.9) Check dependency with time
+```{r}
+# Define the time-dependent transformation
+time_dependent_transformation <- function(x, t) {
+  return(x * log(t + 1))
+}
+
+# Apply the time-dependent transformation to your TRACE data
+trace_transformed <- TRACE
+trace_transformed$time_log <- log(trace_transformed$time + 1)
+
+# Calculate the time effect of CHF, WMI, Diabetes, VF
+chf_effect <- time_dependent_transformation(trace_transformed$chf, trace_transformed$time)
+wmi_effect <- time_dependent_transformation(trace_transformed$wmi, trace_transformed$time)
+vf_effect <- time_dependent_transformation(trace_transformed$vf, trace_transformed$time)
+diabetes_effect <- time_dependent_transformation(trace_transformed$diabetes, trace_transformed$time)
+
+# Create a dataframe to visualize the average effects by time interval
+time_intervals <- seq(0, max(trace_transformed$time), length.out = 100)
+chf_mean_effect <- sapply(time_intervals, function(t) mean(chf_effect[trace_transformed$time <= t]))
+wmi_mean_effect <- sapply(time_intervals, function(t) mean(wmi_effect[trace_transformed$time <= t]))
+vf_mean_effect <- sapply(time_intervals, function(t) mean(vf_effect[trace_transformed$time <= t]))
+diabetes_mean_effect <- sapply(time_intervals, function(t) mean(diabetes_effect[trace_transformed$time <= t]))
+
+```
+
+```{r}
+par(mfrow=c(2,2))
+
+# Visualize the average time effect of CHF
+plot(time_intervals, chf_mean_effect, type = 'l', col = 'red', lwd = 2,
+     xlab = 'Time (years)', ylab = 'CHF- Av. Time Effect',
+     main = 'CHF with log(t + 1) Transformation')
+
+# Visualize the average time effect of WMI
+plot(time_intervals, wmi_mean_effect, type = 'l', col = 'red', lwd = 2,
+     xlab = 'Time (years)', ylab = 'WMI- av. Time Effect',
+     main = 'WMI with log(t + 1) Transformation')
+
+# Visualize the average time effect of Diabetes
+plot(time_intervals, diabetes_mean_effect, type = 'l', col = 'red', lwd = 2,
+     xlab = 'Time (years)', ylab = 'Diab. - av. Time Effect',
+     main = 'Diabetes with log(t + 1) Transformation')
+
+# Visualize the average time effect of vf
+plot(time_intervals, vf_mean_effect, type = 'l', col = 'red', lwd = 2,
+     xlab = 'Time (years)', ylab = 'VF - av. Time Effect',
+     main = 'VF with log(t + 1) Transformation')
+
+```
+The transformations indicate that CHF, WMI, Diabetes, and VF all have cumulative effects on survival, with varying degrees of impact.
+WMI: Shows globally the most significant impact on survival with a significant uptick after the 6th year
+CHF: Shows a moderate and steadily increasing impact
+Diabetes and VF: Both conditions have relatively low impact on survival. Diabetes shows a continuous increasing impact over the first 6th years. VF shows a low impact with a significant uptick after the 6th years.
+
+## 2.10) Covariance matrix of status, diabetes, and time
+```{r}
+#covariance
+cov_matrix <- cov(TRACE[, c(3,7,8)])
+print(cov_matrix)
+```
+## 2.11) Pair plots of age, wmi, and time
+```{r}
+#pair plot between numeric features
+pairs(~age + wmi + time,data=TRACE)
+```
+## 2.12) Correllation matrix for all variables
+```{r}
+cor(TRACE[,2:8])
+```
+# 3) KAPLAN-MEIER ESTIMATION FOR OVERALL SURVIVAL (Nonparametric Estimation of Survival and Comparison of Groups
+
+    This section involves Kaplan-Meier estimation, which is a nonparametric method used to estimate the survival function from the data. The overall survival probability is estimated, and the survival probability is compared between different groups, such as male and female patients. A log-rank test is performed to statistically compare the survival curves between these groups.
+
+## 3.1) Baseline model
+```{r}
+km_fit <- survfit(Surv(time, status == 9) ~ 1, data = TRACE)
+
+# Plotting
+ggsurvplot(km_fit, 
+           conf.int = TRUE, 
+           title = "Overall Survival", 
+           xlab = "Time (years)", 
+           ylab = "Survival Probability")
+
+km_fit
+```
+
+After fitting the model, it generates a plot showing the survival probability over time, with confidence intervals to indicate the uncertainty around the estimated survival probabilities.
+
+## 3.2) Kaplan-Meier Estimation by Sex
+    
+    Here, the survival analysis is extended by grouping the data based on the sex of the individuals. This allows for a comparison of survival probabilities between different groups (in this case, males and females). A separate Kaplan-Meier curve is generated for each group, and these curves are plotted together to visually compare the survival experiences of the groups over time.
+    
+```{r}
+# Model
+km_fit_sex <- survfit(Surv(time, status == 9) ~ sex, data = TRACE)
+
+# Plotting
+ggsurvplot(km_fit_sex, 
+           conf.int = TRUE, 
+           title = "Survival by Sex", 
+           xlab = "Time (years)", 
+           ylab = "Survival Probability", 
+           legend.labs = c("Male", "Female"))
+```
+
+```{r}
+# Log-rank test to compare survival between groups
+surv_diff <- survdiff(Surv(time, status == 9) ~ sex, data = TRACE)
+
+# Display the result
+surv_diff
+```
+
+## 3.3) Kaplan-Meier Estimation by Age Group
+
+Here patients are divided into three age groups: < 60 years, 60-70 years, and > 70 years. This is done using the cut function, which segments continuous age data into specified intervals.
+
+Kaplan-Meier Fit: A Kaplan-Meier survival curve is estimated for each of these age groups using the survfit function.
+
+Plotting: The ggsurvplot function is used to visualize the survival curves for each age group, showing how survival probability changes over time across the different age categories.
+
+```{r}
+# Create age groups
+TRACE$age_group <- cut(TRACE$age, breaks = c(-Inf, 60, 70, Inf), labels = c("< 60 years", "60-70 years", "> 70 years"))
+
+# Kaplan-Meier fit by age group
+km_fit_age <- survfit(Surv(time, status == 9) ~ age_group, data = TRACE)
+
+# Plotting
+ggsurvplot(km_fit_age, 
+           conf.int = TRUE, 
+           title = "Survival by Age Group", 
+           xlab = "Time (years)", 
+           ylab = "Survival Probability", 
+           legend.labs = levels(TRACE$age_group))
+```
+```{r}
+# Log-rank test to compare survival between Age Group
+km_fit_age <- survdiff(Surv(time, status == 9) ~ age_group, data = TRACE)
+
+# Display the result
+km_fit_age
+```
+
+## 3.4) Kaplan-Meier Estimation by WMI Group
+
+Grouping: Patients are categorized into three groups based on their WMI (Wall Motion Index) values: Low, Medium, and High. The groups are defined by dividing the WMI data into three equal parts (tertiles) based on quantiles.
+Kaplan-Meier Fit: Kaplan-Meier survival curves are computed for each WMI group.
+Plotting: The survival curves are plotted, allowing comparison of survival probabilities among patients with low, medium, and high WMI values.
+
+```{r}
+# Create WMI groups
+TRACE$wmi_group <- cut(TRACE$wmi, breaks = quantile(TRACE$wmi, probs = c(0, 0.33, 0.66, 1), na.rm = TRUE), labels = c("Low", "Medium", "High"))
+
+# Kaplan-Meier fit by WMI group
+km_fit_wmi <- survfit(Surv(time, status == 9) ~ wmi_group, data = TRACE)
+
+# Plotting
+ggsurvplot(km_fit_wmi, 
+           conf.int = TRUE, 
+           title = "Survival by WMI Group", 
+           xlab = "Time (years)", 
+           ylab = "Survival Probability", 
+           legend.labs = levels(TRACE$wmi_group))
+```
+```{r}
+#Examine the cutoffs between the different WMI groups
+min(TRACE$wmi[which(TRACE$wmi_group == "Low")])
+max(TRACE$wmi[which(TRACE$wmi_group == "Low")])
+min(TRACE$wmi[which(TRACE$wmi_group == "Medium")])
+max(TRACE$wmi[which(TRACE$wmi_group == "Medium")])
+min(TRACE$wmi[which(TRACE$wmi_group == "High")])
+max(TRACE$wmi[which(TRACE$wmi_group == "High")])
+```
+
+```{r}
+# Log-rank test to compare survival WMI Group
+km_fit_wmi <- survdiff(Surv(time, status == 9) ~ wmi_group, data = TRACE)
+
+# Display the result
+km_fit_wmi
+```
+
+## 3.5) Kaplan-Meier Estimation by Diabetes Status
+
+Patients are grouped based on the presence or absence of diabetes.
+
+Kaplan-Meier Fit: A Kaplan-Meier survival analysis is performed separately for patients with and without diabetes.
+
+Plotting: The resulting survival curves are displayed, showing differences in survival probabilities between diabetic and non-diabetic patients.
+
+```{r}
+# Kaplan-Meier fit by diabetes status
+km_fit_diabetes <- survfit(Surv(time, status == 9) ~ diabetes, data = TRACE)
+
+# Plotting
+ggsurvplot(km_fit_diabetes, 
+           conf.int = TRUE, 
+           title = "Survival by Diabetes Status", 
+           xlab = "Time (years)", 
+           ylab = "Survival Probability", 
+           legend.labs = c("Absent", "Present"))
+```
+```{r}
+# Log-rank test to compare survival Diabetes Status
+km_fit_diabetes <- survdiff(Surv(time, status == 9) ~ diabetes, data = TRACE)
+
+# Display the result
+km_fit_diabetes
+```
+
+## 3.6) Kaplan-Meier Estimation by Ventricular Fibrillation (VF) Status
+
+Patients are divided based on whether they have ventricular fibrillation (VF) or not.
+
+Kaplan-Meier Fit: The survival analysis is carried out for both groups: those with VF and those without.
+
+Plotting: The survival curves for patients with and without VF are plotted, allowing visual comparison of survival probabilities between the two groups.
+
+```{r}
+# Kaplan-Meier fit by ventricular fibrillation status
+km_fit_vf <- survfit(Surv(time, status == 9) ~ vf, data = TRACE)
+
+# Plotting
+ggsurvplot(km_fit_vf, 
+           conf.int = TRUE, 
+           title = "Survival by Ventricular Fibrillation (VF) Status", 
+           xlab = "Time (years)", 
+           ylab = "Survival Probability", 
+           legend.labs = c("Absent", "Present"))
+```
+```{r}
+# Log-rank test to compare survival Ventricular Fibrillation Status
+km_fit_vf <- survdiff(Surv(time, status == 9) ~ vf, data = TRACE)
+
+# Display the result
+km_fit_vf
+```
+
+## 3.7) Cross Group Analysis: Diabetes Status and Ventricular Fibrillation (VF) Status
+      
+      This section extends the Kaplan-Meier analysis by examining the survival probabilities of patients based on both diabetes status and VF status. It creates a combined grouping of these variables, allowing for more detailed insights into how these factors interact and influence survival.
+
+```{r}
+# Kaplan-Meier fit by Diabetes and Ventricular Fibrillation (VF) Status
+km_fit_diabetes_vf <- survfit(Surv(time, status == 9) ~ diabetes + vf, data = TRACE)
+
+# Plotting
+ggsurvplot(km_fit_diabetes_vf, 
+           conf.int = TRUE, 
+           title = "Survival by Diabetes and Ventricular Fibrillation (VF) Status", 
+           xlab = "Time (years)", 
+           ylab = "Survival Probability",
+           font.legend = 6,
+           legend.title = "Groups",
+           legend.labs = c("Diabetes Absent & VF Absent", "Diabetes Absent & VF Present", 
+                           "Diabetes Present & VF Absent", "Diabetes Present & VF Present"))
+
+```
+```{r}
+# Log-rank test to compare survival by Diabetes and Ventricular Fibrillation Status
+km_fit_diabetes_vf <- survdiff(Surv(time, status == 9) ~ diabetes + vf, data = TRACE)
+
+# Display the result
+km_fit_diabetes_vf
+```
+
+## 3.8) Cross Group Analysis: Age Group and Ventricular Fibrillation (VF) Status
+      
+      Similar to the previous section, this analysis explores the interaction between age groups and VF status. By splitting the data into age categories and analyzing their survival alongside VF status, we gain a better understanding of how age and VF together impact survival probabilities.
+
+```{r}
+# Kaplan-Meier fit by Age Group and Ventricular Fibrillation (VF) Status
+km_fit_age_vf <- survfit(Surv(time, status == 9) ~ age_group + vf, data = TRACE)
+
+# Plotting
+ggsurvplot(km_fit_age_vf, 
+           conf.int = TRUE, 
+           title = "Survival by Age Group and Ventricular Fibrillation (VF) Status", 
+           xlab = "Time (years)", 
+           ylab = "Survival Probability", 
+           font.legend = 6,
+           legend.title = "Groups",
+           legend.labs = c("< 60 years & VF Absent", "< 60 years & VF Present", 
+                           "60-70 years & VF Absent", "60-70 years & VF Present", 
+                           "> 70 years & VF Absent", "> 70 years & VF Present"))
+```
+```{r}
+# Log-rank test to compare survival by Age Group and Ventricular Fibrillation Status
+km_fit_age_vf <- survdiff(Surv(time, status == 9) ~ age_group + vf, data = TRACE)
+
+# Display the result
+km_fit_age_vf
+```
+
+## 3.9) Cross Group Analysis: WMI Group and Diabetes Status
+      
+      Here, the analysis is focused on the interaction between Wall Motion Index (WMI) groups and diabetes status. This allows for a comparison of survival probabilities across different WMI categories while also considering the presence or absence of diabetes.
+
+```{r}
+# Kaplan-Meier fit by WMI Group and Diabetes Status
+km_fit_wmi_diabetes <- survfit(Surv(time, status == 9) ~ wmi_group + diabetes, data = TRACE)
+
+# Plotting
+ggsurvplot(km_fit_wmi_diabetes, 
+           conf.int = TRUE, 
+           title = "Survival by WMI Group and Diabetes Status", 
+           xlab = "Time (years)", 
+           ylab = "Survival Probability",
+           font.legend = 6,
+           legend.title = "Groups",
+           legend.labs = c("Low WMI & Diabetes Absent", "Low WMI & Diabetes Present", 
+                           "Medium WMI & Diabetes Absent", "Medium WMI & Diabetes Present", 
+                           "High WMI & Diabetes Absent", "High WMI & Diabetes Present"))
+```
+    
+```{r}
+# Log-rank test to compare survival by WMI and Diabetes Status
+km_fit_wmi_diabetes <- survdiff(Surv(time, status == 9) ~ wmi_group + diabetes, data = TRACE)
+
+# Display the result
+km_fit_wmi_diabetes
+```
+
+# 4) COX PROPORTIONAL HAZARD
+ 
+In this section we focus on building Cox proportional hazards models, which are used to assess the impact of multiple covariates on survival.
+Different model are created to identify the best variable to take.
+
+The interaction model examines whether the effect of one variable on survival depends on another variable. The results are summarized to interpret the significance and impact of each covariate.
+    
+> with all variables
+
+In the dataset we have right censored data(status=1) and concurrential censored data(status =7&8). For the cox model the response variable must be binary so we could add the concurential censored data to the censored data or delete them. As we have 11 observations with this concurrential censored data, we decide to delete them from this analyse.
+As we have only 11 observations with censored data (<1% observation)  we delete these observations to use cox model.
+
+
+
+# without the concurential censored data
+
+> data filtred on status = 0 and 9
+
+## 4.1) Filter data to remove statuses 7 and 9
+```{r}
+#Make a dataframe with status 7 and 8 filtered out
+coxTRACE <- filter(TRACE, status == 9 | status == 0)
+
+#modification to change status=9 to status = 1
+coxTRACE$status <- ifelse(coxTRACE$status==9,1,coxTRACE$status)
+
+head(coxTRACE, n=10)
+```
+
+## 4.2) CoxPH models **without** transformations
+
+### 4.2.1) CoxPH with all base features
+```{r}
+cox_model_base <- coxph(Surv(time, status) ~ chf + sex + vf + age + wmi + diabetes , data = coxTRACE)
+summary(cox_model_base)
+vif_values <-vif(cox_model_base)
+print(vif_values)
+```
+Except sex, all variables have a significant effect in the risk.
+
+- chf, vf, age and diabetes have an impact on the risk of death.
+- wmi shows a protective effect 
+
+
+-> let's remove it
+
+### 4.2.2) CoxPH without sex
+```{r}
+cox_model_base2 <- coxph(Surv(time, status) ~ chf  + vf + age + wmi + diabetes , data = coxTRACE)
+summary(cox_model_base2)
+vif_values2 <-vif(cox_model_base2)
+print(vif_values2)
+# Check Schoenfeld residual without vf
+cox.zph_test_base <- cox.zph(cox_model_base2)
+
+print(cox.zph_test_base$table)
+
+plot(cox.zph_test_base)
+```
+
+Globally, the model shows a strong violation of the hypothesis of proportionality.
+All the parameters shows this violation. To notice, the strong violation of the variable vf. 
+Due to the previous analysis, this result was expected and confirm the using of transformation for the variables to capture time effect.
+
+```{r}
+#Martingale residual 
+coxTRACE$residual_bASE2 <- residuals(cox_model_base2, type = "martingale")
+
+par(mfrow = c(1, 3), mar = c(4.2, 2, 2, 2))
+with(coxTRACE, {
+
+  plot(age, residual_bASE2)
+  lines(lowess(age, residual_bASE2), lwd = 2)
+
+  plot(residual_bASE2 ~ wmi)
+  lines(lowess(wmi, residual_bASE2), lwd = 2)
+
+})
+```
+->  Age and WMI are non-linear. A transformation to linearize them could be useful, such as log, square root, power, etc.
+
+
+
+## 4.3) CoxPH models with linearization of age and wmi
+
+### 4.3.1) Linearization of age and wmi - confirm with Martingale residuals (using reduced coxph model)
+```{r}
+#Make a dataframe containing transforms of age and wmi
+coxTRACE$age_pow_2.6 = coxTRACE$age**2.6 #Best transform to make age linear
+coxTRACE$ln_wmi = log(coxTRACE$wmi) #Best transform to make WMI linear
+
+#Fit both standard and transformed coxph models
+fit <- coxph(Surv(time, status) ~ age + wmi, data=coxTRACE)
+fit2 <- coxph(Surv(time, status) ~ age_pow_2.6 + ln_wmi, data=coxTRACE)
+
+#Plot the Martingale residuals to verify that the nonlinear age and wmi variables are made linear after transformation
+ggcoxfunctional(fit = fit, data=coxTRACE) #Test only continuous variables
+ggcoxfunctional(fit = fit2, data=coxTRACE) #Test only continuous variables
+```
+
+### 4.3.2) Model using linearized age and wmi (sex excluded)
+Have we the same result if we remove vf of the cox model, sex(not significant) and add the transformation on age and wmi
+
+```{r}
+cox_model_base3 <- coxph(Surv(time, status) ~  chf  + age_pow_2.6 + ln_wmi + diabetes , data = coxTRACE)
+summary(cox_model_base3)
+vif_values3 <-vif(cox_model_base3)
+print(vif_values3)
+# Check Schoenfeld residual
+cox.zph_test_base3 <- cox.zph(cox_model_base3)
+
+print(cox.zph_test_base3$table)
+
+plot(cox.zph_test_base3)
+```
+-> we have a violation of hypothesis due to chf and ln_wmi
+
+-> let's try to use the strata for the time dependent features
+
+
+
+
+Globally, the model continue to show a violation of the hypothesis of proportionality but age, sex and diabetes are no more rejcted the hypothesis.
+-> we try to capture the effect of the time for variables: vf, chf, wmi and diabetes (we do it also with diabetes as we have seen effect of time in the EDA part)
+
+## 4.4) CoxPH models using interactions between variables
+
+### 4.4.1) Model with **all** interactions
+
+```{r}
+cox_model_interactions <- coxph(Surv(time, status == 9) ~ wmi*chf + wmi*age + wmi*sex + wmi*diabetes + wmi*vf +
+                                  chf*age + chf*sex + chf*diabetes + chf*vf +
+                                  age*sex + age*diabetes + age*vf +
+                                  sex*diabetes + sex*vf +
+                                  diabetes*vf,
+                                data = TRACE)
+summary(cox_model_interactions)
+```
+
+The interactions are significant mainly with wmi and with others variables time dependant (wmi:diabetes, wmi:vf,diabetes:vf) and with wmi:chf.
+-> not necessary to check the violation of hypothesis 
+-> not appropriate model
+
+-> let's try stratification with :
+strata(wmi, diabetes, vf) + strata(chf) 
+strata(wmi, diabetes) +strat(vf) + strata(chf)
+strata(chf) + strata(wmi) + strata(diabetes) + strata(vf)
+
+-> for wmi, let's try with ln_wmi and strata(wmi)
+
+## 4.5) CoxPH models using stratification
+
+### 4.5.1) Model using stratification for diabetes, chf, and vf (linearized age and wmi)
+
+strata applied to time dependent features
+
+```{r}
+#with strata on time dependent features
+cox_model_strata <- coxph(Surv(time, status) ~  strata(chf)   + age_pow_2.6 + ln_wmi + strata(diabetes) + strata(vf) , data = coxTRACE)
+summary(cox_model_strata)
+vif_values_strata <-vif(cox_model_strata)
+print(vif_values_strata)
+# Schoenfeld residuals
+cox.zph_test_strata <- cox.zph(cox_model_strata)
+print(cox.zph_test_strata$table)
+plot(cox.zph_test_strata)
+ggcoxdiagnostics(cox_model_strata, type = "schoenfeld")
+```
+-> the model is valid
+
+
+### 4.5.2) Model using stratification for ***diabetes + vf*** and chf (linearized age and wmi)
+```{r}
+#with strata on time dependance 
+cox_model_strata <- coxph(Surv(time, status) ~ age_pow_2.6 + ln_wmi + strata(diabetes,vf) + strata(chf) , data = coxTRACE)
+summary(cox_model_strata)
+vif_values_strata <-vif(cox_model_strata)
+print(vif_values_strata)
+# Schoenfeld residuals
+cox.zph_test_strata <- cox.zph(cox_model_strata)
+print(cox.zph_test_strata$table)
+plot(cox.zph_test_strata)
+ggcoxdiagnostics(cox_model_strata, type = "schoenfeld")
+```
+-> we can use this model
+
+### 4.5.3) Model using stratification for diabetes, chf, vf, and wmi (linearized age)
+```{r}
+#with strata on time dependance feature including diabetes
+cox_model_strata3 <- coxph(Surv(time, status) ~  strata(chf)   + age_pow_2.6 + strata(wmi) + strata(diabetes) + strata(vf) , data = coxTRACE)
+summary(cox_model_strata3)
+vif_values_strata3 <-vif(cox_model_strata3)
+print(vif_values_strata3)
+# Schoenfeld residuals
+cox.zph_test_strata3 <- cox.zph(cox_model_strata3)
+print(cox.zph_test_strata3$table)
+plot(cox.zph_test_strata3)
+ggcoxdiagnostics(cox_model_strata3, type = "schoenfeld")
+```
+-> we can use this model and we could use 
+
+### 4.5.4) Model using stratification for ***wmi +diabetes+vf*** and chf (linearized age)
+```{r}
+#with strata on time dependance feature including diabetes
+cox_model_strata4 <- coxph(Surv(time, status) ~  strata(chf)   + age_pow_2.6 + strata(wmi,diabetes,vf) , data = coxTRACE)
+summary(cox_model_strata4)
+vif_values_strata4 <-vif(cox_model_strata4)
+print(vif_values_strata4)
+# Schoenfeld residuals
+cox.zph_test_strata4 <- cox.zph(cox_model_strata4)
+print(cox.zph_test_strata4$table)
+plot(cox.zph_test_strata4)
+ggcoxdiagnostics(cox_model_strata4, type = "schoenfeld")
+```
+-> we can use this model and we could use 
+strata(chf) + age_pow_2.6 + strata(wmi,diabetes) + strata(vf)
+
+
+## 4.6) Transformation using a parametric function to the features using tt option of coxph
+
+### 4.6.1) Model using log(t+1) time transform on diabetes, chf, vf. Diabetes is also present in simple form. Age and wmi are linearized.
+
+```{r}
+cox_model_tvc <-coxph(Surv(time, status) ~  age_pow_2.6   + ln_wmi + chf + vf + diabetes+ tt(chf) + tt(vf) + tt(diabetes), data = coxTRACE, tt = function(x, t, ...) x * log(t + 1))
+summary(cox_model_tvc)
+vif_values_tvc <-vif(cox_model_tvc)
+print(vif_values_tvc)
+
+```
+-> diabetes and tt(diabetes)not significant : we remove diabetes as in the previous model diabetes was significant + time dependant
+
+### 4.6.2) Model using log(t+1) time transform on diabetes, chf, vf. Removed diabetes in simple form. Age and wmi are linearized
+```{r}
+cox_model_tvc2 <-coxph(Surv(time, status) ~  age_pow_2.6   + ln_wmi + chf + vf + tt(chf) + tt(vf) + tt(diabetes) , data = coxTRACE, tt = function(x, t, ...) x * log(t + 1))
+summary(cox_model_tvc2)
+vif_values_tvc2 <-vif(cox_model_tvc2)
+print(vif_values_tvc2)
+```
+
+-> we can't use the function cox.zph as the term tt() isn't defined so we'll try to plot manually the residuals
+
+```{r}
+schoenfeld_res2 <- residuals(cox_model_tvc2, type = "schoenfeld")
+event_times <- coxTRACE$time[coxTRACE$status == 1]
+# plot(schoenfeld_res2[, "tt(wmi)"] ~ event_times, 
+#      main = "Schoenfeld Residuals for tt(wmi)", 
+#      xlab = "Time", 
+#      ylab = "Schoenfeld Residuals")
+# abline(h = 0, col = "red")
+# lines(lowess(event_times, schoenfeld_res2[, "tt(wmi)"]), col = "blue")
+# event_times <- coxTRACE$time[coxTRACE$status == 1]
+
+plot(schoenfeld_res2[, "tt(vf)"] ~ event_times,
+     main = "Schoenfeld Residuals for tt(vf)",
+     xlab = "Time",
+     ylab = "Schoenfeld Residuals")
+abline(h = 0, col = "red")
+lines(lowess(event_times, schoenfeld_res2[, "tt(vf)"]), col = "blue")
+
+plot(schoenfeld_res2[, "tt(diabetes)"] ~ event_times, 
+     main = "Schoenfeld Residuals for tt(diabetes)", 
+     xlab = "Time", 
+     ylab = "Schoenfeld Residuals")
+abline(h = 0, col = "red")
+lines(lowess(event_times, schoenfeld_res2[, "tt(diabetes)"]), col = "blue")
+
+plot(schoenfeld_res2[, "vf"] ~ event_times, 
+     main = "Schoenfeld Residuals for vf", 
+     xlab = "Time", 
+     ylab = "Schoenfeld Residuals")
+abline(h = 0, col = "red")
+lines(lowess(event_times, schoenfeld_res2[, "vf"]), col = "blue")
+
+plot(schoenfeld_res2[, "age_pow_2.6"] ~ event_times, 
+     main = "Schoenfeld Residuals for age_pow_2.6", 
+     xlab = "Time", 
+     ylab = "Schoenfeld Residuals")
+abline(h = 0, col = "red")
+lines(lowess(event_times, schoenfeld_res2[, "age_pow_2.6"]), col = "blue")
+
+plot(schoenfeld_res2[, "chf"] ~ event_times, 
+     main = "Schoenfeld Residuals for chf", 
+     xlab = "Time", 
+     ylab = "Schoenfeld Residuals")
+abline(h = 0, col = "red")
+lines(lowess(event_times, schoenfeld_res2[, "chf"]), col = "blue")
+
+plot(schoenfeld_res2[, "ln_wmi"] ~ event_times, 
+     main = "Schoenfeld Residuals for ln_wmi", 
+     xlab = "Time", 
+     ylab = "Schoenfeld Residuals")
+abline(h = 0, col = "red")
+lines(lowess(event_times, schoenfeld_res2[, "ln_wmi"]), col = "blue")
+```
+
+Visually for the most of the variables the curve seems constant over time without clear trend except for chf
+
+-> we remove it
+
+### 4.6.3) Model using log(t+1) time transform only on diabetes and vf (chf removed). Age and wmi are linearized.
+
+```{r}
+cox_model_tvc3 <-coxph(Surv(time, status) ~ age_pow_2.6   + ln_wmi   + vf + tt(vf) + tt(diabetes), data = coxTRACE, tt = function(x, t, ...) x * log(t + 1))
+summary(cox_model_tvc3)
+vif_values_tvc3 <-vif(cox_model_tvc3)
+print(vif_values_tvc3)
+```
+
+we keep this model however we are not completely sure of this stability as we were not able to check the proportionality
+
+```{r}
+# Extract Schoenfeld residual
+schoenfeld_res3 <- residuals(cox_model_tvc3, type = "schoenfeld")
+
+event_times <- coxTRACE$time[coxTRACE$status == 1]
+plot(schoenfeld_res3[, "ln_wmi"] ~ event_times, 
+     main = "Schoenfeld Residuals for ln_wmi", 
+     xlab = "Time", 
+     ylab = "Schoenfeld Residuals")
+abline(h = 0, col = "red")
+lines(lowess(event_times, schoenfeld_res3[, "ln_wmi"]), col = "blue")
+event_times <- coxTRACE$time[coxTRACE$status == 1]
+
+plot(schoenfeld_res3[, "tt(vf)"] ~ event_times, 
+     main = "Schoenfeld Residuals for tt(vf)", 
+     xlab = "Time", 
+     ylab = "Schoenfeld Residuals")
+abline(h = 0, col = "red")
+lines(lowess(event_times, schoenfeld_res3[, "tt(vf)"]), col = "blue")
+
+plot(schoenfeld_res3[, "tt(diabetes)"] ~ event_times, 
+     main = "Schoenfeld Residuals for tt(diabetes)", 
+     xlab = "Time", 
+     ylab = "Schoenfeld Residuals")
+abline(h = 0, col = "red")
+lines(lowess(event_times, schoenfeld_res3[, "tt(diabetes)"]), col = "blue")
+
+plot(schoenfeld_res3[, "vf"] ~ event_times, 
+     main = "Schoenfeld Residuals for vf", 
+     xlab = "Time", 
+     ylab = "Schoenfeld Residuals")
+abline(h = 0, col = "red")
+lines(lowess(event_times, schoenfeld_res3[, "vf"]), col = "blue")
+
+plot(schoenfeld_res3[, "age_pow_2.6"] ~ event_times, 
+     main = "Schoenfeld Residuals for _pow_2.6", 
+     xlab = "Time", 
+     ylab = "Schoenfeld Residuals")
+abline(h = 0, col = "red")
+lines(lowess(event_times, schoenfeld_res3[, "age_pow_2.6"]), col = "blue")
+
+
+```
+
+## 4.7) Adding a time interaction to the features
+
+### 4.7.1) Model using sqrt(t) interaction with diabetes, chf, vf. Age and wmi are linearized.
+
+
+```{r}
+cox_model_tinteract_t <- coxph(Surv(time, status) ~ age_pow_2.6 + ln_wmi  + chf * I((time)^(1/2)) + vf * I((time)^(1/2)) + diabetes * I((time)^(1/2)), data = coxTRACE)
+summary(cox_model_tinteract_t)
+vif_values_tinteract_t <-vif(cox_model_tinteract_t)
+print(vif_values_tinteract_t)
+
+# Check Schoenfeld residual
+cox.zph_test_tinteract_t <- cox.zph(cox_model_tinteract_t)
+
+print(cox.zph_test_tinteract_t$table)
+
+plot(cox.zph_test_tinteract_t)
+
+```
+-> not good result: only I(log(time + 1)) significant
+
+### 4.7.2) Model using log(t+1) interaction with diabetes, chf, vf. Age and wmi are linearized.
+
+```{r}
+cox_model_tinteract_t2 <- coxph(Surv(time, status) ~ age_pow_2.6 + ln_wmi + chf * I(log(time+1)) + vf * I(log(time+1)) + diabetes * I(log(time+1)), data = coxTRACE)
+summary(cox_model_tinteract_t2)
+vif_values_tinteract_t2 <-vif(cox_model_tinteract_t2)
+print(vif_values_tinteract_t2)
+
+# Check Schoenfeld residual
+cox.zph_test_tinteract_t2 <- cox.zph(cox_model_tinteract_t2)
+
+print(cox.zph_test_tinteract_t2$table)
+
+plot(cox.zph_test_tinteract_t2)
+
+```
+
+-> only I((time)^(1/2)) an chf:I((time)^(1/2)) significant
+
+## 4.8) CoxPH using truncated data
+
+### 4.8.1) Examine initial survival curve
+```{r}
+# Survival curve
+surv_object <- Surv(coxTRACE$time, coxTRACE$status)
+fit <- survfit(surv_object ~ 1, data = coxTRACE)
+plot(fit, xlab = "Time (years)", ylab = "Survival probability", main = "Survival curve")
+```
+-> we can see an important decrease the first 1.5/2 years
+-> stabilisation around 6.5/7years
+
+### 4.8.2) Examine survival curve with doubly-truncated data (both extremeties)
+```{r}
+# Definition of truncation bounds
+truncation_point_sup <- 6.65
+truncation_point_inf <- 1.8
+
+# Create new truncated data
+coxTRACE_truncated <- within(coxTRACE, {
+  status_truncated <- ifelse(time < truncation_point_inf | time > truncation_point_sup, 0, status)
+  time_truncated <- ifelse(time < truncation_point_inf, truncation_point_inf, ifelse(time > truncation_point_sup,truncation_point_sup , time))
+  
+  # Truncation of time-dependent covariates
+  chf_truncated <- chf
+  age_truncated <- age
+  sex_truncated <- sex
+  vf_truncated <- vf
+  wmi_truncated <- wmi
+  diabetes_truncated <- diabetes
+  
+  #chf_truncated <- ifelse(time < truncation_point_inf | time > truncation_point_sup, 0, chf)
+  #age_truncated <- ifelse(time < truncation_point_inf | time > truncation_point_sup, 0, age)
+  #sex_truncated <- ifelse(time < truncation_point_inf | time > truncation_point_sup, 0, sex)
+  #vf_truncated <- ifelse(time < truncation_point_inf | time > truncation_point_sup, 0, vf)
+  #wmi_truncated <- ifelse(time < truncation_point_inf | time > truncation_point_sup, 0, wmi)
+  #diabetes_truncated <- ifelse(time < truncation_point_inf | time > truncation_point_sup, 0, diabetes)
+})
+
+# Survival with truncated variables
+surv_object_truncated <- Surv(coxTRACE_truncated$time_truncated, coxTRACE_truncated$status_truncated)
+fit_truncated <- survfit(surv_object_truncated ~ 1, data = coxTRACE_truncated)
+
+# Visualize the new survival curve
+plot(fit_truncated, xlab = "Time (years)", ylab = "Survival probability", main = "Survival curve with truncated data")
+
+```
+
+### 4.8.3) CoxPH model of this truncated data (all basic variables)
+```{r}
+cox_model_trunc <- coxph(Surv(time_truncated, status_truncated) ~ sex + chf  + vf + age + wmi + diabetes, data = coxTRACE_truncated)
+summary(cox_model_trunc)
+vif_values_trunc <-vif(cox_model_trunc)
+print(vif_values_trunc)
+# Check Schoenfeld residual
+cox.zph_trunc <- cox.zph(cox_model_trunc)
+
+print(cox.zph_trunc$table)
+
+plot(cox.zph_trunc)
+```
+
+-> let's remove vf_truncated
+
+### 4.8.4) CoxPH model of this truncated data - vf dropped
+```{r}
+cox_model_trunc2 <- coxph(Surv(time_truncated, status_truncated) ~ sex + chf + age + wmi + diabetes, data = coxTRACE_truncated)
+summary(cox_model_trunc2)
+vif_values_trunc2 <-vif(cox_model_trunc2)
+print(vif_values_trunc2)
+# Check Schoenfeld residual
+cox.zph_trunc2 <- cox.zph(cox_model_trunc2)
+
+print(cox.zph_trunc2$table)
+
+plot(cox.zph_trunc2)
+```
+
+```{r}
+#Martingale residual 
+coxTRACE_truncated$residual_trunc <- residuals(cox_model_trunc2, type = "martingale")
+
+par(mfrow = c(1, 4), mar = c(4.2, 2, 2, 2))
+with(coxTRACE_truncated, {
+  plot(age, residual_trunc)
+  lines(lowess(age, residual_trunc), lwd = 2)
+})
+with(coxTRACE_truncated, {
+  plot(wmi, residual_trunc)
+  lines(lowess(wmi, residual_trunc), lwd = 2)
+})
+with(coxTRACE_truncated, {
+  plot(age_pow_2.6, residual_trunc)
+  lines(lowess(age_pow_2.6, residual_trunc), lwd = 2)
+})
+with(coxTRACE_truncated, {
+  plot(ln_wmi, residual_trunc)
+  lines(lowess(ln_wmi, residual_trunc), lwd = 2)
+})
+```
+
+-> we can use this model
+
+## 4.9) Model comparaisons with AIC
+
+```{r}
+# Check different models variable
+model1 <- coxph(Surv(time_truncated, status_truncated) ~ sex + chf  + age + diabetes + wmi, data = coxTRACE_truncated)
+model2 <- coxph(Surv(time, status) ~  strata(chf)   + age_pow_2.6 + ln_wmi + strata(diabetes) + strata(vf),data=coxTRACE)
+model3 <- coxph(Surv(time, status) ~ age_pow_2.6 + ln_wmi + strata(diabetes,vf) + strata(chf),data=coxTRACE)
+model4 <- coxph(Surv(time, status) ~ strata(chf)   + age_pow_2.6 + strata(wmi) + strata(diabetes) + strata(vf),data=coxTRACE)
+model5 <- coxph(Surv(time, status) ~ strata(chf)   + age_pow_2.6 + strata(wmi,diabetes) + strata(vf),data=coxTRACE)
+model6 <- coxph(Surv(time, status) ~ strata(chf)   + age_pow_2.6 + strata(wmi,diabetes,vf),data=coxTRACE)
+model7 <- coxph(Surv(time, status) ~ age_pow_2.6   + ln_wmi   + vf + tt(vf) + tt(diabetes), data = coxTRACE, tt = function(x, t, ...) x * log(t + 1))
+
+
+# Compute AIC
+aic_1 <- AIC(model1)
+aic_2 <- AIC(model2)
+aic_3 <- AIC(model3)
+aic_4 <- AIC(model4)
+aic_5 <- AIC(model5)
+aic_6 <- AIC(model6)
+aic_7 <- AIC(model7)
+
+
+cat("AIC with truncated data (sex, age, diabetes, chf):", aic_1, "\n")
+cat("AIC with strata (diabetes,vf,chf) + transformed lmi,age:", aic_2, "\n")
+cat("AIC with combined strata (**diabetes+vf**,chf) + transformed lmi,age:", aic_3, "\n")
+cat("AIC with strata (diabetes,vf,chf,wmi) + transformed age :", aic_4, "\n")
+cat("AIC with combined strata (**diabetes+ vf**,chf,wmi) + transformed age:", aic_5, "\n")
+cat("AIC with combined strata (**diabetes+ vf +wmi**,chf) + transformed age :", aic_6, "\n")
+cat("AIC with tt():", aic_7, "\n")
+
+```
+
+##
+```{r}
+bestmodelaic<-coxph(Surv(time_truncated, status_truncated) ~ sex + chf  + age + diabetes + wmi , data = coxTRACE_truncated)
+fullmodel<-coxph(Surv(time_truncated, status_truncated) ~ sex + chf  + age + diabetes + wmi + vf , data = coxTRACE_truncated)
+
+plot(survfit(bestmodelaic), main="Survival Probability - Truncated data",
+     ylab="Probability", xlab="Years",
+     col=c("turquoise", "black", "black"))
+lines(survfit(fullmodel), col="red", lty=2)
+
+plot(survfit(bestmodelaic, type="fleming"), fun="cumhaz", main="Cumulative Hazard - Truncated data",
+     ylab="Hazard", xlab="Years",
+     col=c("turquoise", "black", "black"))
+lines(survfit(fullmodel, type="fleming"), fun="cumhaz", col="red", lty=2)
+
+```
+
+## 4.10) Model comparaisons with cross-validation
+
+### 4.10.1) Functions for Verweij & Van Houwelingen Cross Validation
+```{r}
+#Make the input coxph function
+coxph_chosen <- function(data, formula, beta_init=NULL, tt = FALSE){
+  if (is.null(beta_init)){
+    ifelse(isTRUE(tt),
+    fit <- coxph(formula, data=data, tt=function(x, t, ...) x * log(t + 1)),
+    fit <- coxph(formula, data=data, tt=NULL)
+    )
+  } else {
+    ifelse(isTRUE(tt),
+    fit <- coxph(formula, data=data, init=beta_init, tt=function(x, t, ...) x * log(t + 1)),
+    fit <- coxph(formula, data=data, init=beta_init, tt=NULL)
+    )
+  }
+  return(fit)
+}
+
+#Generate data frame ordered by survival time and with survival group column (necessary for likelihood calculation)
+cross_validation <- function(df, formula, nb_folds=10, tt=FALSE){
+  #Initialize the folds
+  folds <- createFolds(df[,1], k = nb_folds)
+  #Prepare variables to store results
+  log_likelihood_train <- list()
+  log_likelihood_global <- list()
+  # Loop through the folds 
+  for (i in 1:nb_folds){
+    # Split into train and test 
+    df_train <- df[-folds[[i]],] 
+    #df_test <- df[folds[[i]],]
+    
+    # Train the model using fold
+    fit <- coxph_chosen(df_train, formula, beta_init=NULL, tt = tt)
+    betas <- as.vector(fit$coefficients)
+    
+    # Train with all data, but using the betas derived from the fold
+    fit_global <- coxph_chosen(df, formula, beta_init=betas, tt = tt)
+    
+    #Save log likelihoods
+    log_likelihood_train[[i]] <- fit$loglik[2] #Retrieve the final log likelihood (final betas)
+    log_likelihood_global[[i]] <- fit_global$loglik[1] #Retrieve the inital log likelihood (starting betas)
+  }
+  fold_error <- -2 * (unlist(log_likelihood_global) - unlist(log_likelihood_train))
+  CVE <- sum(fold_error)
+  std_dev <- sd(fold_error)
+  cat("Cross Validation Error: ", CVE, "\n", "Standard Deviation: ", std_dev, "\n", "Formula: ", toString(formula), "\n\n", sep = "")
+}
+
+```
+
+### 4.10.2a) Run the best CoxPH Models through the cross validation and compare (not including time transformation or truncation)
+```{r}
+set.seed(3213)
+formulas <- c(Surv(time, status) ~  strata(chf)   + age_pow_2.6 + ln_wmi + strata(diabetes) + strata(vf),
+             Surv(time, status) ~ age_pow_2.6 + ln_wmi + strata(diabetes,vf) + strata(chf),
+             Surv(time, status) ~ strata(chf)   + age_pow_2.6 + strata(wmi) + strata(diabetes) + strata(vf),
+             Surv(time, status) ~ strata(chf)   + age_pow_2.6 + strata(wmi,diabetes) + strata(vf),
+             Surv(time, status) ~ strata(chf)   + age_pow_2.6 + strata(wmi,diabetes,vf),
+             Surv(time, status) ~ age_pow_2.6   + ln_wmi   + vf + tt(vf) + tt(diabetes)
+           )
+tt_list <- c(FALSE, FALSE, FALSE, FALSE, FALSE, TRUE)
+i <- 1 #counter
+for (formula in formulas){
+  cross_validation(coxTRACE, formula, nb_folds=10, tt=tt_list[i])
+  i = i +1
+}
+```
+### 4.10.2b) Run the truncated CoxPH Model through the cross validation
+```{r}
+set.seed(3213)
+formulas <- c(Surv(time_truncated, status_truncated) ~ sex + chf  + age + diabetes + wmi)
+for (formula in formulas){
+  cross_validation(coxTRACE_truncated, formula)
+}
+```
+
+## IGNORE : TimeCox model - other approach for analyzing time dependencies and transformations
+This model is used for automatic transformation of time-dependent parameters/features, but it is difficult to extract full
+results and explain them. In particular, the time transformations are not made available. AIC and cross-validation cannot
+be (easily) performed either. It is thus difficult to assess the quality of the model.
+
+```{r}
+timecox_model <- timecox(Surv(time, status) ~ age + chf + vf + diabetes + wmi, 
+                         data = coxTRACE, 
+                         n.sim = 200,   # This seems to be the correct argument for simulations
+                         max.time = 9 
+                        )
+summary(timecox_model)
+```
+
+-> Suprem test : all variable are significant
+-> Kolmogorov/Cramer -> chf: time dependant
+
+
+```{r, out.width="80%"}
+par(mfrow=c(2,3))
+plot(timecox_model)
+```
+
+```{r, out.width="80%"}
+par(mfrow=c(2,3))
+plot(timecox_model,score=TRUE)
+```
+effect of time on covariate:
+- age seems stable
+- chf: significant variability
+-vf: time effect but which seems stable over the time
+-wmi: fist 3 years, impact to time constant but small variation afetr 3 years -> possible time effect
+- diabete : constant the first 3-4 years and small variation after -> -> possible time effect
+
+
+Test 3 model:
+const(age) + chf + vf + diabetes + wmi
+const(age) + chf + vf + const(diabetes) + const(wmi)
+const(age) + const(chf) + vf + const(diabetes) + const(wmi)
+
+
+
+```{r}
+timecox_model1 <- timecox(Surv(time, status) ~ const(age) + chf + vf + diabetes + wmi, 
+                         data = coxTRACE, 
+                         n.sim = 200,   # This seems to be the correct argument for simulations
+                         max.time = 9 # This is correctly placed
+                        )
+timecox_model2 <- timecox(Surv(time, status) ~ const(age) + chf + vf + const(diabetes) + const(wmi), 
+                         data = coxTRACE, 
+                         n.sim = 200,   # This seems to be the correct argument for simulations
+                         max.time = 9 # This is correctly placed
+                        )
+timecox_model3 <- timecox(Surv(time, status) ~ const(age) + const(chf) + vf + const(diabetes) + const(wmi), 
+                         data = coxTRACE, 
+                         n.sim = 200,   # This seems to be the correct argument for simulations
+                         max.time = 9 # This is correctly placed
+                        )
+
+
+```
+
+
